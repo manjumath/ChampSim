@@ -15,6 +15,8 @@
  */
 
 #include "cache.h"
+#include "ml_logger.h"
+#include "ml_decision_tree.h"
 
 #include <algorithm>
 #include <cassert>
@@ -31,6 +33,7 @@
 #include "util/algorithm.h"
 #include "util/bits.h"
 #include "util/span.h"
+#include <iostream>
 
 CACHE::CACHE(CACHE&& other)
     : operable(other),
@@ -148,6 +151,11 @@ auto CACHE::fill_block(mshr_type mshr, uint32_t metadata) -> BLOCK
   to_fill.v_address = mshr.v_address;
   to_fill.data = mshr.data_promise->data;
   to_fill.pf_metadata = metadata;
+  to_fill.hits_since_insertion = 0;
+  to_fill.reused = false;
+  // Compute a simple PC hash (e.g., lower 12 bits of PC)
+uint16_t hashed_pc = static_cast<uint16_t>(mshr.ip.to<uint64_t>() & 0xFFF);
+  to_fill.pc_signature = hashed_pc;  // You need to compute a PC hash on fill
 
   return to_fill;
 }
@@ -172,15 +180,57 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
 
   // find victim
   auto [set_begin, set_end] = get_set_span(fill_mshr.address);
+  long set = get_set_index(fill_mshr.address);
+  long num_ways = std::distance(set_begin, set_end);
+      if (num_ways <= 0) {
+        std::cerr << "🚨 ERROR: num_ways is invalid (" << num_ways << ") for set = " << set << "!\n";
+        return false;
+    }
   auto way = std::find_if_not(set_begin, set_end, [](auto x) { return x.valid; });
   if (way == set_end) {
-    way = std::next(set_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip,
-                                                fill_mshr.address, fill_mshr.type));
+    //way = std::next(set_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip,
+     //                                           fill_mshr.address, fill_mshr.type));
+     long victim_way = impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, set,
+                                           &*set_begin, fill_mshr.ip, fill_mshr.address, fill_mshr.type);
+
+        if (victim_way < 0 || victim_way >= num_ways) {
+            std::cerr << "🚨 ERROR: impl_find_victim() returned invalid way " << victim_way
+                      << " for set " << set << " (Valid range: 0-" << num_ways - 1 << ")\n";
+            victim_way = num_ways - 1;  // Force a valid way selection
+        }
+
+        way = std::next(set_begin, victim_way);
   }
+     long way_idx = std::distance(set_begin, way);
+
+    // 🔍 Debugging Statements
+    //std::cerr << "⚠️ handle_fill: CPU = " << fill_mshr.cpu
+    //          << ", Set Index = " << set
+    //          << ", Selected Way = " << way_idx
+    //          << ", Max Way Index = " << num_ways - 1
+    //          << ", Fill Type = " << static_cast<int>(fill_mshr.type)
+    //          << ", Address = " << std::hex << fill_mshr.address.to<uint64_t>()
+    //          << "\n";
+
+    log_ml_features(this, *way, current_time.time_since_epoch() / clock_period,
+                get_set_index(fill_mshr.address),
+                way_idx, fill_mshr.ip, fill_mshr.type, false);
+
+    // 🚨 Error Detection
+    if (way == set_end) {
+        std::cerr << "🚨 ERROR: Selected `way == set_end`, which is invalid! Check eviction policy.\n";
+    }
+
+    if (way_idx < 0 || way_idx >= num_ways) {
+        std::cerr << "🚨 ERROR: Selected way index " << way_idx
+                  << " is out of valid range [0, " << num_ways - 1 << "]!\n";
+        return false;  // Prevent assertion failure
+    }
+
   assert(set_begin <= way);
   assert(way <= set_end);
   assert(way != set_end || fill_mshr.type != access_type::WRITE); // Writes may not bypass
-  const auto way_idx = std::distance(set_begin, way);             // cast protected by earlier assertion
+  //const auto way_idx = std::distance(set_begin, way);             // cast protected by earlier assertion
 
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} set: {} way: {} type: {} prefetch_metadata: {} cycle_enqueued: {} cycle: {}\n", NAME, __func__,
@@ -214,6 +264,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
 
   champsim::address evicting_address{};
   if (way != set_end && way->valid) {
+   this->ml_policy.update_on_eviction(*way, way->reused);
     evicting_address = module_address(*way);
   }
 
@@ -232,6 +283,10 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
     }
 
     *way = fill_block(fill_mshr, metadata_thru);
+    // 🌟 Reset ML features on cache fill
+way->hits_since_insertion = 0;
+way->reused = false;
+way->pc_signature = static_cast<uint16_t>((fill_mshr.ip.to<uint64_t>()) & 0x3FF); // 10-bit hash of PC
   }
 
   // COLLECT STATS
@@ -275,6 +330,16 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+    // ✅ Update per-access features for ML
+if (way->hits_since_insertion < std::numeric_limits<decltype(way->hits_since_insertion)>::max())
+    ++way->hits_since_insertion;
+
+way->reused = true;
+
+    log_ml_features(this, *way, current_time.time_since_epoch() / clock_period,
+                    get_set_index(handle_pkt.address),
+                    std::distance(set_begin, way),
+                    handle_pkt.ip, handle_pkt.type, true);
 
     response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
     for (auto* ret : handle_pkt.to_return) {
@@ -542,14 +607,31 @@ auto CACHE::get_set_span(champsim::address address) -> std::pair<set_type::itera
 {
   const auto set_idx = get_set_index(address);
   assert(set_idx < NUM_SET);
-  return get_span(std::begin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
+  long actual_num_ways = get_actual_num_ways(set_idx);
+   //std::cerr << "🛠 DEBUG: get_set_span() -> Cache = " << NAME
+   //           << ", Set Index = " << set_idx
+   //           << ", NUM_WAY = " << actual_num_ways
+   //           << ", Distance = " << std::distance(std::begin(block),
+     //               get_span(std::begin(block), static_cast<set_type::difference_type>(set_idx), actual_num_ways).second)
+      //        << "\n";
+
+return get_span(std::begin(block), static_cast<set_type::difference_type>(set_idx), actual_num_ways);
+
 }
 
 auto CACHE::get_set_span(champsim::address address) const -> std::pair<set_type::const_iterator, set_type::const_iterator>
 {
   const auto set_idx = get_set_index(address);
   assert(set_idx < NUM_SET);
-  return get_span(std::cbegin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
+  long actual_num_ways = get_actual_num_ways(set_idx);
+  // std::cerr << "🛠 DEBUG: get_set_span() -> Cache = " << NAME
+  //            << ", Set Index = " << set_idx
+  //            << ", NUM_WAY = " << actual_num_ways
+  //            << ", Distance = " << std::distance(std::begin(block),
+  //                  get_span(std::begin(block), static_cast<set_type::difference_type>(set_idx), actual_num_ways).second)
+   //           << "\n";
+
+return get_span(std::begin(block), static_cast<set_type::difference_type>(set_idx), actual_num_ways);
 }
 
 // LCOV_EXCL_START exclude deprecated function
@@ -820,7 +902,45 @@ void CACHE::impl_initialize_replacement() const { repl_module_pimpl->impl_initia
 long CACHE::impl_find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, const BLOCK* current_set, champsim::address ip, champsim::address full_addr,
                              access_type type) const
 {
-  return repl_module_pimpl->impl_find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
+long max_ways = get_actual_num_ways(set);
+
+    //DecisionTreePolicy ml_policy;
+    auto& ml = this->ml_policy;
+    std::vector<long> evict_candidates;
+
+    for (long way = 0; way < max_ways; ++way) {
+        const BLOCK& blk = current_set[way];
+        if (!blk.valid)
+            return way;
+
+        if (ml.classify(blk) == Decision::EVICT)
+            evict_candidates.push_back(way);
+    }
+
+    long victim;
+    if (!evict_candidates.empty()) {
+        victim = evict_candidates[0];  // Optional: use recency or hits to break ties
+    } else {
+        victim = repl_module_pimpl->impl_find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
+    }
+
+
+//long victim = repl_module_pimpl->impl_find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
+
+        //std::cerr << "✅ find_victim: CPU = " << triggering_cpu
+        //      << ", Set Index = " << set
+        //      << ", Selected Way = " << victim
+        //      << ", Max Way Index = " << max_ways - 1
+        //      << ", Address = " << std::hex << full_addr.to<uint64_t>()
+        //      << "\n";
+
+    if (victim < 0 || victim >= max_ways) {
+        std::cerr << "🚨 ERROR: impl_find_victim() returned invalid way " << victim
+                  << " for set " << set << " (Valid range: 0-" << max_ways - 1 << ")\n";
+        victim = max_ways - 1;  // Force a valid way selection
+    }
+    return victim;
+//return repl_module_pimpl->impl_find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
 }
 
 void CACHE::impl_update_replacement_state(uint32_t triggering_cpu, long set, long way, champsim::address full_addr, champsim::address ip,
@@ -839,6 +959,12 @@ void CACHE::impl_replacement_final_stats() const { repl_module_pimpl->impl_repla
 
 void CACHE::initialize()
 {
+    std::cerr << "🚀 Cache Initialization: "
+            << "NUM_SET = " << NUM_SET
+            << ", NUM_WAY = " << NUM_WAY
+            << ", Total Cache Blocks = " << (NUM_SET * NUM_WAY)
+            << ", Cache Size = " << (NUM_SET * NUM_WAY * 64 / 1024) << " KB\n";
+
   impl_prefetcher_initialize();
   impl_initialize_replacement();
 }
@@ -933,4 +1059,27 @@ void CACHE::print_deadlock()
     champsim::range_print_deadlock(ul->PQ, NAME + "_PQ", q_writer, q_entry_pack);
   }
 }
+
+long CACHE::get_actual_num_ways(long set_idx) const
+{
+long num_ways = NUM_WAY;  // Default to NUM_WAY
+    if (NAME.find("L1I") != std::string::npos) num_ways = 8;  // L1 Instruction/Data Cache
+    if (NAME.find("L1D") != std::string::npos) num_ways = 12;  // L1 Instruction/Data Cache
+    if (NAME.find("L2C") != std::string::npos) num_ways = 8;   // L2 Cache
+    if (NAME.find("LLC") != std::string::npos) num_ways = 16; // Last-Level Cache
+
+    // **NEW**: Add support for TLBs
+    if (NAME.find("ITLB") != std::string::npos) num_ways = 4;   // Instruction TLB
+    if (NAME.find("DTLB") != std::string::npos) num_ways = 4;   // Data TLB
+    if (NAME.find("STLB") != std::string::npos) num_ways = 12;  // Second-Level TLB
+
+//    std::cerr << "⚠ WARNING: Unknown Cache Level (" << NAME << "), using NUM_WAY = " << NUM_WAY << "\n";
+   //     std::cerr << "🛠️ DEBUG: get_actual_num_ways() -> Cache = " << NAME
+    //          << ", Set Index = " << set_idx
+     //         << ", Returning NUM_WAY = " << num_ways
+      //        << "\n";
+    return num_ways;  // Default fallback
+}
+
+
 // LCOV_EXCL_STOP

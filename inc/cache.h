@@ -46,6 +46,7 @@
 #include "operable.h"
 #include "util/to_underlying.h" // for to_underlying
 #include "waitable.h"
+#include "ml_decision_tree.h"
 
 class CACHE : public champsim::operable
 {
@@ -121,9 +122,11 @@ private:
   void finish_translation(const response_type& packet);
 
   void issue_translation(tag_lookup_type& q_entry) const;
+  mutable DecisionTreePolicy ml_policy; // ML decision tree
 
 public:
   using BLOCK = champsim::cache_block;
+  long get_actual_num_ways(long set_idx) const;
 
 private:
   static BLOCK fill_block(mshr_type mshr, uint32_t metadata);

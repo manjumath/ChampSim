@@ -35,6 +35,8 @@
 #include "tracereader.h"
 #include "vmem.h"
 
+FILE *logfile;
+
 namespace champsim
 {
 std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases, std::vector<tracereader>& traces);
@@ -55,6 +57,9 @@ const unsigned LOG2_PAGE_SIZE = champsim::lg2(PAGE_SIZE);
 int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 {
   configured_environment gen_environment{};
+  logfile = fopen("cache_evictions.csv", "w");  // ✅ Use the global `logfile`
+fprintf(logfile, "Address, Prefetched, Dirty, Prefetch Metadata\n");
+fclose(logfile);
 
   CLI::App app{"A microarchitecture simulator for research and education"};
 

@@ -31,6 +31,13 @@ struct cache_block {
   champsim::address data{};
 
   uint32_t pf_metadata = 0;
+    // ➕ ML Features
+  uint8_t hits_since_insertion = 0;  // 2–3 bits, store hit count since inserted
+  bool reused = false;               // Set if accessed at least once after fill
+  uint16_t pc_signature = 0;         // Hashed PC, 10–14 bits
+
+  // Optional: track recency (if not done by RRIP or LRU policy already)
+  uint8_t recency = 0;
 };
 } // namespace champsim
 

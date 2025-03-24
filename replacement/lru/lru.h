@@ -23,7 +23,11 @@ public:
                               access_type type);
   void update_replacement_state(uint32_t triggering_cpu, long set, long way, champsim::address full_addr, champsim::address ip, champsim::address victim_addr,
                                 access_type type, uint8_t hit);
+    long get_actual_num_ways(long set) const;
+
   // void replacement_final_stats()
+private:
+    CACHE* cache;  // Store reference to the cache
 };
 
 #endif
