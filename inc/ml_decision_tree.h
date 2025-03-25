@@ -15,9 +15,9 @@ public:
 
     Decision classify(const champsim::cache_block& blk) {
         int leaf_idx = get_leaf_index(blk);
-	std::cerr << "[ML] Leaf " << leaf_idx
-          << ", Counter = " << (int)leaf_counters[leaf_idx]
-          << ", Decision = " << ((leaf_counters[leaf_idx] >= 2) ? "KEEP" : "EVICT") << "\n";
+//	std::cerr << "[ML] Leaf " << leaf_idx
+//          << ", Counter = " << (int)leaf_counters[leaf_idx]
+  //        << ", Decision = " << ((leaf_counters[leaf_idx] >= 2) ? "KEEP" : "EVICT") << "\n";
         return (leaf_counters[leaf_idx] >= 2) ? Decision::KEEP : Decision::EVICT;
     }
 
@@ -28,9 +28,9 @@ public:
         } else {
             if (leaf_counters[leaf_idx] < 3) leaf_counters[leaf_idx]++;
         }
-    std::cerr << "[UPDATE] Leaf " << leaf_idx
-              << ", Reused? " << was_reused
-              << ", Counter = " << static_cast<int>(leaf_counters[leaf_idx]) << "\n";
+    //std::cerr << "[UPDATE] Leaf " << leaf_idx
+      //        << ", Reused? " << was_reused
+        //      << ", Counter = " << static_cast<int>(leaf_counters[leaf_idx]) << "\n";
 
     }
 
