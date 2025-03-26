@@ -12,19 +12,16 @@ class PCSignatureReusePredictor {
 public:
       static constexpr int SIG_BITS = 8;                         // 🧠 Use 8-bit signatures
     static constexpr int TABLE_SIZE = 1 << SIG_BITS;           // 256 entries
-    //static constexpr int TABLE_SIZE = 256; // Must be power of 2
     std::array<uint8_t, TABLE_SIZE> counters{}; // 2-bit counters (0-3)
 // Predict reuse: true if counter is confident (≥ 2)
     bool predict(uint16_t pc_sig) const {
 	uint8_t sig = static_cast<uint8_t>(pc_sig & 0xFF);     // 🧼 Mask to 8 bits
         return counters[sig] >= 2;
-        //return counters[pc_sig & (TABLE_SIZE - 1)] >= 2;
     }
 
     void update(uint16_t pc_sig, bool reused) {
 	           uint8_t sig = static_cast<uint8_t>(pc_sig & 0xFF);     // 🧼 Mask to 8 bits
         auto& ctr = counters[sig];
-        //auto& ctr = counters[pc_sig & (TABLE_SIZE - 1)];
         if (reused) {
             if (ctr < 3) ++ctr;
         } else {
@@ -44,17 +41,10 @@ public:
     EnhancedDecisionTreePolicy(PCSignatureReusePredictor* predictor) : reuse_predictor(predictor) {}
 
     Decision classify(const champsim::cache_block& blk) {
-        //int leaf = get_leaf_index(blk);
-        //return (leaf_counters[leaf] >= 2) ? Decision::KEEP : Decision::EVICT;
-	// Override: if SHiP is *very confident* reused, always keep
-if (reuse_predictor && reuse_predictor->counters[blk.pc_signature] == 3)
-    return Decision::KEEP;
+    int leaf = get_leaf_index(blk);
+    return (leaf_counters[leaf] >= 2) ? Decision::KEEP : Decision::EVICT;
+}
 
-// Optionally, if counter is 0 (very cold), always evict
-if (reuse_predictor && reuse_predictor->counters[blk.pc_signature] == 0)
-    return Decision::EVICT;
-
-    }
 
     void update_on_eviction(const champsim::cache_block& blk, bool was_reused) {
         int leaf = get_leaf_index(blk);
@@ -73,7 +63,7 @@ private:
 
         if (blk.hits_since_insertion == 0) {
             if (blk.prefetch) return 0;                // Cold prefetch
-            if (blk.recency > 6) return 1;              // Cold + old
+            if (blk.recency > 6) return 1;  // Cold + old
             return 2;                                   // Cold + recent
         } else {
             if (reuse_pred) return 3;                  // Reuse predicted
