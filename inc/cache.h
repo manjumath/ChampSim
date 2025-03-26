@@ -122,7 +122,7 @@ private:
   void finish_translation(const response_type& packet);
 
   void issue_translation(tag_lookup_type& q_entry) const;
-  mutable DecisionTreePolicy ml_policy; // ML decision tree
+  mutable EnhancedDecisionTreePolicy ml_policy; // ML decision tree
 
 public:
   using BLOCK = champsim::cache_block;

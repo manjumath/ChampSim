@@ -155,7 +155,8 @@ auto CACHE::fill_block(mshr_type mshr, uint32_t metadata) -> BLOCK
   to_fill.reused = false;
   // Compute a simple PC hash (e.g., lower 12 bits of PC)
 uint16_t hashed_pc = static_cast<uint16_t>(mshr.ip.to<uint64_t>() & 0xFFF);
-  to_fill.pc_signature = hashed_pc;  // You need to compute a PC hash on fill
+to_fill.pc_signature = static_cast<uint8_t>(hashed_pc & 0xFF);  // Mask and convert to 8-bit safely
+  //to_fill.pc_signature = hashed_pc;  // You need to compute a PC hash on fill
 
   return to_fill;
 }
@@ -286,7 +287,8 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
     // 🌟 Reset ML features on cache fill
 way->hits_since_insertion = 0;
 way->reused = false;
-way->pc_signature = static_cast<uint16_t>((fill_mshr.ip.to<uint64_t>()) & 0x3FF); // 10-bit hash of PC
+//way->pc_signature = static_cast<uint16_t>((fill_mshr.ip.to<uint64_t>()) & 0x3FF); // 10-bit hash of PC
+way->pc_signature = static_cast<uint8_t>((fill_mshr.ip.to<uint64_t>()) & 0xFF); // 🔥 8-bit PC signature
   }
 
   // COLLECT STATS
@@ -1062,6 +1064,7 @@ void CACHE::print_deadlock()
 
 long CACHE::get_actual_num_ways(long set_idx) const
 {
+	(void)set_idx; // Silence unused parameter warning
 long num_ways = NUM_WAY;  // Default to NUM_WAY
     if (NAME.find("L1I") != std::string::npos) num_ways = 8;  // L1 Instruction/Data Cache
     if (NAME.find("L1D") != std::string::npos) num_ways = 12;  // L1 Instruction/Data Cache
